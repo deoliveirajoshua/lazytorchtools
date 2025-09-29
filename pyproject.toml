@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0","wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lazytorchtools"
+version = "0.1.0"
+description = "Tiny PyTorch utilities: small model builders and analysis helpers (PyTorch 2.8+)"
+readme = "README.md"
+authors = [ { name="auto", email="" } ]
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, 3.10, 3.11]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install lightweight deps
+        run: |
+          python -m pip install numpy pytest
+
+      - name: Install CPU PyTorch wheel
+        # Use the official PyTorch CPU wheels to avoid CUDA complexity in CI
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+      - name: Install package
+        working-directory: ./projects/lazytorchtools
+        run: python -m pip install -e .
+
+      - name: Run tests
+        run: python -m pytest -q ./projects/lazytorchtools/tests
