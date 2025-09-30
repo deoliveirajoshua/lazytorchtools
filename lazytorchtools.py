@@ -67,6 +67,9 @@ class FFNN(ModularNN):
         in_dim: int,
         out_dim: int,
         hidden_dims: Optional[Sequence[int]] = None,
+        # fast-track: specify number of hidden layers and a single hidden size
+        hidden_layers: Optional[int] = None,
+        hidden_size: Optional[int] = None,
         hidden_activation: Union[nn.Module, Sequence[Any], None] = nn.LeakyReLU(0.2, inplace=True),
         final_activation: Optional[Any] = None,
         dropout: float = 0.0,
@@ -74,8 +77,19 @@ class FFNN(ModularNN):
         hidden_block: Optional[Union[nn.Module, Sequence[Any]]] = None,
     ):
         ops: List[Any] = []
+        # validate fast-track options vs explicit hidden_dims
+        if hidden_dims is not None and (hidden_layers is not None or hidden_size is not None):
+            raise ValueError("Provide either `hidden_dims` OR the fast-track `hidden_layers`/`hidden_size`, not both.")
+
         if hidden_dims is None:
-            hidden_dims = []
+            if hidden_layers is None:
+                hidden_dims = []
+            else:
+                if hidden_size is None:
+                    raise ValueError("`hidden_size` must be provided when `hidden_layers` is set")
+                if hidden_layers < 0:
+                    raise ValueError("`hidden_layers` must be non-negative")
+                hidden_dims = [hidden_size] * hidden_layers
         layers = [in_dim, *hidden_dims, out_dim]
 
         for i in range(len(layers) - 1):

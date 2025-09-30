@@ -1,4 +1,4 @@
-## lazytorchtools
+# lazytorchtools
 
 Small, focused utilities for building tiny PyTorch models and performing a few common analyses.
 
@@ -50,4 +50,25 @@ x2 = torch.randn(B, 4, device=device)
 ntk = lazy.NTK(model)
 K = ntk.empirical_ntk_jacobian_contraction(x1, x2, compute='trace')
 print('NTK trace shape:', K.shape)
-``` 
+```
+
+FFNN usage variants
+
+You can specify hidden layers in two ways:
+
+- Original (explicit list of hidden dims):
+
+```py
+# explicit hidden sizes per layer
+model = lazy.FFNN(4, 2, hidden_dims=[32, 16])
+```
+
+- Fast-track (L layers of size h):
+
+```py
+# 3 hidden layers each with hidden size 64
+model = lazy.FFNN(4, 2, hidden_layers=3, hidden_size=64)
+```
+
+More
+- See the `lazytorchtools.py` source for other helpers (weight init, conv builders, inference surface Hessians, etc.).
