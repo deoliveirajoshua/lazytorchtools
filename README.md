@@ -1,6 +1,6 @@
 # lazytorchtools
 
-Small, focused utilities for building tiny PyTorch models and performing a few common analyses.
+Small, focused utilities for PyTorch for those who want to be *lazy* with some boilerplate things.
 
 This package is intentionally tiny and dependency-light: it expects PyTorch >= 2.0 (with `torch.func`) and NumPy.
 
