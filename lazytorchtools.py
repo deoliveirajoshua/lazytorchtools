@@ -14,8 +14,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union, Callable
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.func import hessian, vmap, jacrev
-from functorch import make_functional
+from torch.func import hessian, vmap, jacrev, functional_call
 
 
 def _ensure_module(m: Any) -> Optional[nn.Module]:
@@ -234,7 +233,7 @@ def set_seed(seed: int) -> None:
     os.environ.setdefault("PYTHONHASHSEED", str(seed))
 
 
-def toggle_model_grads(model: nn.Module, requires_grad: bool) -> None:
+def toggle_grads(model: nn.Module, requires_grad: bool) -> None:
     for param in model.parameters():
         param.requires_grad = requires_grad
 
@@ -266,19 +265,40 @@ class SurfaceHessian(nn.Module):
         return eigvals, eigvecs
 
 
-def sin_x2(x: torch.Tensor) -> torch.Tensor:
-    return torch.sin(x * x)
-
-
 class NTK:
+    """Neural tangent kernel utilities implemented with torch.func only.
+
+    This mirrors the previous API but avoids `functorch.make_functional` by
+    using `torch.func.functional_call` with an explicit mapping of parameter
+    names to tensors.
+    """
+
     def __init__(self, model: nn.Module):
         self.model = model
-        self.fnet, self.params = make_functional(model)
+        # Record parameter names and buffers so we can build the mapping
+        self.param_names = [name for name, _ in model.named_parameters()]
+        self.buffer_dict = {name: buf for name, buf in model.named_buffers()}
+        # Represent parameters as a tuple of tensors (detached, requires_grad=True)
+        self.params = tuple(p.detach().clone().requires_grad_(True) for _, p in model.named_parameters())
+
+    def _params_to_dict(self, params_seq: Sequence[torch.Tensor]) -> dict:
+        d = {name: tensor for name, tensor in zip(self.param_names, params_seq)}
+        # include buffers (non-trainable) unchanged from the model
+        d.update(self.buffer_dict)
+        return d
 
     def fnet_single(self, params: Sequence[torch.Tensor], x: torch.Tensor) -> torch.Tensor:
-        return self.fnet(params, x.unsqueeze(0)).squeeze(0)
+        """Run the model functionally for a single input `x` using `params`.
+
+        `params` is a sequence of tensors in the same order as
+        `model.named_parameters()`.
+        """
+        params_dict = self._params_to_dict(params)
+        out = functional_call(self.model, params_dict, (x.unsqueeze(0),))
+        return out.squeeze(0)
 
     def empirical_ntk_jacobian_contraction(self, x1: torch.Tensor, x2: torch.Tensor, compute: str = "full", chunk_size: Optional[int] = None) -> torch.Tensor:
+        # jacrev over parameter PyTree; vmap over the batch dimension of x
         jac1 = vmap(jacrev(self.fnet_single), (None, 0), chunk_size=chunk_size)(self.params, x1)
         jac1 = [j.flatten(2) for j in jac1]
 
@@ -323,9 +343,8 @@ __all__ = [
     "weights_init",
     "get_gpu",
     "set_seed",
-    "toggle_model_grads",
+    "toggle_grads",
     "count_parameters",
     "SurfaceHessian",
-    "sin_x2",
     "NTK",
 ]
