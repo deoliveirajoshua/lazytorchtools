@@ -5,12 +5,10 @@ Tiny utilities for building small PyTorch models and a few analysis helpers.
 Designed for PyTorch 2.8+.
 """
 from __future__ import annotations
-
 import copy
 import os
 import random
 from typing import Any, List, Optional, Sequence, Tuple, Union, Callable
-
 import numpy as np
 import torch
 import torch.nn as nn
