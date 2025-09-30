@@ -25,7 +25,7 @@ def test_ffnn_and_count():
 def test_toggle_grads():
     lz = _import_pkg()
     model = lz.FFNN(3, 1, hidden_dims=[5])
-    lz.toggle_model_grads(model, False)
+    lz.toggle_grads(model, False)
     assert all(not p.requires_grad for p in model.parameters())
-    lz.toggle_model_grads(model, True)
+    lz.toggle_grads(model, True)
     assert all(p.requires_grad for p in model.parameters())
