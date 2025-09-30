@@ -35,8 +35,11 @@ lazy.set_seed(42)
 # get device info
 got_gpu, device = lazy.get_gpu(verbose=True)
 
-# build a tiny model and move to device
-model = lazy.FFNN(4, 2, hidden_dims=[8, 8]).to(device)
+# build a tiny model with
+# input dimension of 4
+# output dimension of 2
+# 3 hidden layers of dimensions 8, 10, then 12
+model = lazy.FFNN(4, 2, hidden_dims=[8, 10, 12]).to(device)
 
 # count trainable parameters
 print('trainable params:', lazy.count_parameters(model))
