@@ -44,6 +44,13 @@ model = lazy.FFNN(4, 2, hidden_dims=[8, 10, 12]).to(device)
 # count trainable parameters
 print('trainable params:', lazy.count_parameters(model))
 
+# show how much VRAM is currently in use by PyTorch on the device
+lazy.gpu_memory_report(device)
+```
+
+Empirical NTK Tools
+
+```python
 # prepare random inputs on the same device
 B = 4
 x1 = torch.randn(B, 4, device=device)
