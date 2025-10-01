@@ -230,6 +230,38 @@ def get_gpu(verbose: bool = True) -> Tuple[bool, torch.device]:
     return got_gpu, device
 
 
+def bytes_to_gb(x): 
+    return x / (1024 ** 3)
+
+def gpu_memory_report(device: int | torch.device = None):
+    """Print current allocated GB and unused GB on a CUDA device."""
+    if device is None:
+        device = torch.device('cuda', torch.cuda.current_device())
+    else:
+        device = torch.device(device)
+
+    # Synchronize to make stats more accurate for just-finished kernels
+    torch.cuda.synchronize(device)
+
+    # PyTorch allocator stats (per device, for this process)
+    allocated = torch.cuda.memory_allocated(device)
+    reserved  = torch.cuda.memory_reserved(device)
+    unused_in_reserved = max(0, reserved - allocated)
+
+    # Driver-level stats (whole device)
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    used_bytes = total_bytes - free_bytes
+
+    print(f"Device: {device}  (name: {torch.cuda.get_device_name(device)})")
+    print(f"PyTorch allocated: {bytes_to_gb(allocated):.2f} GB")
+    print(f"PyTorch reserved (total): {bytes_to_gb(reserved):.2f} GB")
+    print(f"PyTorch reserved but unused: {bytes_to_gb(unused_in_reserved):.2f} GB")
+    print(f"CUDA free (driver): {bytes_to_gb(free_bytes):.2f} GB")
+    print(f"CUDA total: {bytes_to_gb(total_bytes):.2f} GB")
+    print(f"CUDA used (driver): {bytes_to_gb(used_bytes):.2f} GB")
+
+
+
 def set_seed(seed: int) -> None:
     """Set random seeds to attempt deterministic behavior across torch / numpy / random."""
     torch.manual_seed(seed)
@@ -348,15 +380,151 @@ class NTK:
         return result
 
 
+# -----------------------
+# Fancy-indexable, lazy dataset adapters
+# -----------------------
+
+def fast_labels(ds) -> np.ndarray:
+    # Preferred: .targets
+    if hasattr(ds, "targets") and ds.targets is not None:
+        t = ds.targets
+        if isinstance(t, torch.Tensor):
+            return t.cpu().numpy().astype(np.int64)
+        return np.asarray(t, dtype=np.int64)
+
+    # Food101 (and some others) may provide .labels
+    if hasattr(ds, "labels") and ds.labels is not None:
+        lab = ds.labels
+        # If labels are strings, map via class_to_idx
+        if len(lab) > 0 and isinstance(lab[0], str) and hasattr(ds, "class_to_idx"):
+            m = ds.class_to_idx
+            return np.asarray([m[s] for s in lab], dtype=np.int64)
+        return np.asarray(lab, dtype=np.int64)
+
+    # Generic ImageFolder-style fallback: .samples or .imgs
+    if hasattr(ds, "samples") and ds.samples is not None:
+        return np.asarray([cls for _, cls in ds.samples], dtype=np.int64)
+    if hasattr(ds, "imgs") and ds.imgs is not None:
+        return np.asarray([cls for _, cls in ds.imgs], dtype=np.int64)
+
+    # Last resort (slow): iterates items (avoid if at all possible)
+    return np.asarray([int(ds[i][1] if not torch.is_tensor(ds[i][1]) else ds[i][1].item())
+                       for i in range(len(ds))], dtype=np.int64)
+
+
+IdxLike = Union[int, Sequence[int], np.ndarray, torch.Tensor]
+
+
+class FancyIndexableDataset(Dataset):
+    def __init__(self, base_ds, transform=None, show_progress=False, tqdm_desc="loading from disc"):
+        self.base_ds = base_ds
+        self.transform = transform
+        self.show_progress = show_progress
+        self.tqdm_desc = tqdm_desc
+
+    # ... keep __len__ and _get_one unchanged ...
+
+    def __getitem__(self, idx):
+        # Single index path (no progress bar)
+        if isinstance(idx, (int, np.integer)) or (torch.is_tensor(idx) and idx.dim() == 0):
+            x, y = self._get_one(int(idx))
+            return x, y
+
+        # Normalize to a 1D numpy array for fancy indexing
+        if isinstance(idx, (list, tuple)):
+            idx = np.asarray(idx)
+        if torch.is_tensor(idx):
+            idx = idx.to(torch.long).cpu().numpy()
+        if isinstance(idx, np.ndarray):
+            idx = idx.astype(np.int64)
+
+        # Use tqdm only for "batch" fancy indexing
+        it = idx
+        if self.show_progress:
+            it = tqdm(it, total=len(idx), desc=self.tqdm_desc, leave=False)
+
+        xs, ys = [], []
+        for i in it:
+            x, y = self._get_one(int(i))
+            xs.append(x)
+            ys.append(y)
+
+        X = torch.stack(xs, dim=0)
+        Y = torch.tensor(ys, dtype=torch.long)
+        return X, Y
+
+
+class IndexedView(Dataset):
+    """
+    Restrict a FancyIndexableDataset to a fixed list of absolute indices.
+    Still supports fancy indexing relative to this view.
+    """
+    def __init__(self, base: FancyIndexableDataset, idxs: np.ndarray):
+        self.base = base
+        self.idxs = np.asarray(idxs, dtype=np.int64)
+
+    def __len__(self):
+        return len(self.idxs)
+
+    def __getitem__(self, idx: IdxLike):
+        if isinstance(idx, (int, np.integer)) or (torch.is_tensor(idx) and idx.dim() == 0):
+            return self.base[int(self.idxs[int(idx)])]
+        if isinstance(idx, (list, tuple)):
+            idx = np.asarray(idx)
+        if torch.is_tensor(idx):
+            idx = idx.to(torch.long).cpu().numpy()
+        if isinstance(idx, np.ndarray):
+            idx = idx.astype(np.int64)
+        abs_idx = self.idxs[idx]
+        return self.base[abs_idx]
+
+
+class PairView(Dataset):
+    """
+    Pair a (lazy, fancy-indexable) image dataset with a provided label tensor (possibly noisy).
+    Returns (X, Y) for __getitem__, where idx can be scalar or a batch of indices.
+    """
+    def __init__(self, img_ds: Dataset, labels: torch.Tensor):
+        assert len(img_ds) == len(labels)
+        self.img_ds = img_ds
+        self.labels = labels
+
+    def __len__(self):
+        return len(self.img_ds)
+
+    def __getitem__(self, idx: IdxLike):
+        X, _ = self.img_ds[idx]  # discard base label; use provided labels
+        if isinstance(idx, (list, tuple)):
+            idx = np.asarray(idx)
+        if torch.is_tensor(idx):
+            idx = idx.to(torch.long).cpu().numpy()
+        if isinstance(idx, np.ndarray):
+            idx = idx.astype(np.int64)
+            Y = self.labels[idx]
+        elif isinstance(idx, (int, np.integer)) or (torch.is_tensor(idx) and idx.dim() == 0):
+            Y = self.labels[int(idx)]
+        else:
+            raise TypeError(f"Unsupported index type: {type(idx)}")
+        return X, Y
+
+
+
+
 __all__ = [
     "ModularNN",
     "FFNN",
     "ConvNN",
     "weights_init",
     "get_gpu",
+    "bytes_to_gb",
+    "gpu_memory_report",
     "set_seed",
     "toggle_grads",
     "count_parameters",
     "SurfaceHessian",
     "NTK",
+    "fast_labels",
+    "FancyIndexableDataset",
+    "IndexedView",
+    "PairView"
 ]
