@@ -1,4 +1,6 @@
-# lazytorchtools
+![LazyTorchTools Logo](images/logo.png)
+
+# LazyTorchTools
 
 Small, focused utilities for PyTorch for those who want to be *lazy* with some boilerplate things.
 
