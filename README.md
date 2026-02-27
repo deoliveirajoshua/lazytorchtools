@@ -1,4 +1,4 @@
-![LazyTorchTools Logo](images/logo.png)
+![LazyTorchTools Logo](imgs/logo.png)
 
 # LazyTorchTools
 
