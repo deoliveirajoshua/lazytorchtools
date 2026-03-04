@@ -12,7 +12,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union, Callable
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.func import hessian, vmap, jacrev, functional_call
+from torch.func import hessian, vmap
 
 
 def _ensure_module(m: Any) -> Optional[nn.Module]:
@@ -277,6 +277,32 @@ def set_seed(seed: int) -> None:
     os.environ.setdefault("PYTHONHASHSEED", str(seed))
 
 
+def to_numpy(x: Any) -> Any:
+    """Recursively convert PyTorch tensors to NumPy arrays."""
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    if isinstance(x, dict):
+        return {k: to_numpy(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(to_numpy(v) for v in x)
+    return x
+
+
+def to_tensor(x: Any, device: Optional[torch.device] = None, dtype: Optional[torch.dtype] = None) -> Any:
+    """Recursively convert NumPy arrays (or numeric types) to PyTorch tensors."""
+    if isinstance(x, torch.Tensor):
+        return x.to(device=device, dtype=dtype)
+    if isinstance(x, np.ndarray):
+        return torch.from_numpy(x).to(device=device, dtype=dtype)
+    if isinstance(x, (int, float, bool)):
+        return torch.tensor(x, device=device, dtype=dtype)
+    if isinstance(x, dict):
+        return {k: to_tensor(v, device=device, dtype=dtype) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return type(x)(to_tensor(v, device=device, dtype=dtype) for v in x)
+    return x
+
+
 def toggle_grads(model: nn.Module, requires_grad: bool) -> None:
     for param in model.parameters():
         param.requires_grad = requires_grad
@@ -309,79 +335,9 @@ class SurfaceHessian(nn.Module):
         return eigvals, eigvecs
 
 
-class NTK:
-    """Neural tangent kernel utilities implemented with torch.func only.
-
-    This mirrors the previous API but avoids `functorch.make_functional` by
-    using `torch.func.functional_call` with an explicit mapping of parameter
-    names to tensors.
-    """
-
-    def __init__(self, model: nn.Module):
-        self.model = model
-        # Record parameter names and buffers so we can build the mapping
-        self.param_names = [name for name, _ in model.named_parameters()]
-        self.buffer_dict = {name: buf for name, buf in model.named_buffers()}
-        # Represent parameters as a tuple of tensors (detached, requires_grad=True)
-        self.params = tuple(p.detach().clone().requires_grad_(True) for _, p in model.named_parameters())
-
-    def _params_to_dict(self, params_seq: Sequence[torch.Tensor]) -> dict:
-        d = {name: tensor for name, tensor in zip(self.param_names, params_seq)}
-        # include buffers (non-trainable) unchanged from the model
-        d.update(self.buffer_dict)
-        return d
-
-    def fnet_single(self, params: Sequence[torch.Tensor], x: torch.Tensor) -> torch.Tensor:
-        """Run the model functionally for a single input `x` using `params`.
-
-        `params` is a sequence of tensors in the same order as
-        `model.named_parameters()`.
-        """
-        params_dict = self._params_to_dict(params)
-        out = functional_call(self.model, params_dict, (x.unsqueeze(0),))
-        return out.squeeze(0)
-
-    def empirical_ntk_jacobian_contraction(self, x1: torch.Tensor, x2: torch.Tensor, compute: str = "full", chunk_size: Optional[int] = None) -> torch.Tensor:
-        # jacrev over parameter PyTree; vmap over the batch dimension of x
-        jac1 = vmap(jacrev(self.fnet_single), (None, 0), chunk_size=chunk_size)(self.params, x1)
-        jac1 = [j.flatten(2) for j in jac1]
-
-        jac2 = vmap(jacrev(self.fnet_single), (None, 0), chunk_size=chunk_size)(self.params, x2)
-        jac2 = [j.flatten(2) for j in jac2]
-
-        if compute == "full":
-            einsum_expr = "Naf,Mbf->NMab"
-        elif compute == "trace":
-            einsum_expr = "Naf,Maf->NM"
-        elif compute == "diagonal":
-            einsum_expr = "Naf,Maf->NMa"
-        else:
-            raise ValueError("compute must be one of {'full','trace','diagonal'}")
-
-        result = torch.stack([torch.einsum(einsum_expr, j1, j2) for j1, j2 in zip(jac1, jac2)])
-        result = result.sum(0).squeeze()
-        return result
-
-    def empirical_ntk_jacobian_reflexive_contraction(self, x1: torch.Tensor, compute: str = "full", chunk_size: Optional[int] = None) -> torch.Tensor:
-        jac1 = vmap(jacrev(self.fnet_single), (None, 0), chunk_size=chunk_size)(self.params, x1)
-        jac1 = [j.flatten(2) for j in jac1]
-
-        if compute == "full":
-            einsum_expr = "Naf,Mbf->NMab"
-        elif compute == "trace":
-            einsum_expr = "Naf,Maf->NM"
-        elif compute == "diagonal":
-            einsum_expr = "Naf,Maf->NMa"
-        else:
-            raise ValueError("compute must be one of {'full','trace','diagonal'}")
-
-        result = torch.stack([torch.einsum(einsum_expr, j1, j2) for j1, j2 in zip(jac1, jac1)])
-        result = result.sum(0).squeeze()
-        return result
-
 
 # -----------------------
-# Fancy-indexable, lazy dataset adapters
+# lazy dataset adapters
 # -----------------------
 
 def fast_labels(ds) -> np.ndarray:
@@ -415,7 +371,7 @@ def fast_labels(ds) -> np.ndarray:
 IdxLike = Union[int, Sequence[int], np.ndarray, torch.Tensor]
 
 
-class FancyIndexableDataset(Dataset):
+class IndexableDataset(Dataset):
     def __init__(self, base_ds, transform=None, show_progress=False, tqdm_desc="loading from disc"):
         self.base_ds = base_ds
         self.transform = transform
@@ -456,10 +412,10 @@ class FancyIndexableDataset(Dataset):
 
 class IndexedView(Dataset):
     """
-    Restrict a FancyIndexableDataset to a fixed list of absolute indices.
+    Restrict a IndexableDataset to a fixed list of absolute indices.
     Still supports fancy indexing relative to this view.
     """
-    def __init__(self, base: FancyIndexableDataset, idxs: np.ndarray):
+    def __init__(self, base: IndexableDataset, idxs: np.ndarray):
         self.base = base
         self.idxs = np.asarray(idxs, dtype=np.int64)
 
@@ -508,6 +464,40 @@ class PairView(Dataset):
         return X, Y
 
 
+class FeatureExtractor:
+    """Attaches forward hooks to specified layers in a model to extract activations.
+    
+    Can be used as a context manager to ensure hooks are removed automatically:
+        with FeatureExtractor(model, ["encoder.layer1", "decoder"]) as extractor:
+            out = model(x)
+            features = extractor.features
+    """
+    
+    def __init__(self, model: nn.Module, layer_names: Sequence[str]):
+        self.features: dict[str, torch.Tensor] = {}
+        self._hooks = []
+        
+        for name, module in model.named_modules():
+            if name in layer_names:
+                hook = module.register_forward_hook(self._get_hook(name))
+                self._hooks.append(hook)
+                
+    def _get_hook(self, name: str) -> Callable[..., None]:
+        def hook(module: nn.Module, input: Any, output: Any) -> None:
+            self.features[name] = output
+        return hook
+        
+    def remove(self) -> None:
+        """Removes all attached hooks."""
+        for hook in self._hooks:
+            hook.remove()
+        self._hooks.clear()
+
+    def __enter__(self) -> "FeatureExtractor":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.remove()
 
 
 __all__ = [
@@ -519,12 +509,14 @@ __all__ = [
     "bytes_to_gb",
     "gpu_memory_report",
     "set_seed",
+    "to_numpy",
+    "to_tensor",
     "toggle_grads",
     "count_parameters",
     "SurfaceHessian",
-    "NTK",
     "fast_labels",
-    "FancyIndexableDataset",
+    "IndexableDataset",
     "IndexedView",
-    "PairView"
+    "PairView",
+    "FeatureExtractor"
 ]

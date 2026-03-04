@@ -8,7 +8,8 @@ This package is intentionally tiny and dependency-light: it expects PyTorch >= 2
 
 Highlights
 - Lightweight model builders: `FFNN`, `ConvNN`, and a minimal `ModularNN` wrapper.
-- Small analysis helpers: parameter counting, seed setting, simple NTK utilities, and more.
+- Small analysis helpers: parameter counting, seed setting, and more.
+- `FeatureExtractor` context manager to easily snapshot intermediate layer activations.
 
 Installation
 
@@ -24,8 +25,7 @@ This example shows a short script that:
 - imports the package as `lazy`,
 - sets a random seed for reproducibility,
 - queries whether a GPU is available,
-- builds a tiny FFNN model,
-- computes a small empirical NTK on random inputs.
+- builds a tiny FFNN model.
 
 ```py
 import torch
@@ -50,21 +50,12 @@ print('trainable params:', lazy.count_parameters(model))
 lazy.gpu_memory_report(device)
 ```
 
-Empirical NTK Tools
+## Empirical NTK & Tangents
 
-```python
-# prepare random inputs on the same device
-B = 4
-x1 = torch.randn(B, 4, device=device)
-x2 = torch.randn(B, 4, device=device)
+For Neural Tangent Kernel (NTK) computations and other tangent-space utilities, please see the separate [torchtangents](https://github.com/deoliveirajoshua/torchtangents) library!
 
-# construct the NTK helper and compute an empirical NTK (trace version)
-ntk = lazy.NTK(model)
-K = ntk.empirical_ntk_jacobian_contraction(x1, x2, compute='trace')
-print('NTK trace shape:', K.shape)
-```
 
-FFNN usage variants
+## FFNN usage variants
 
 You can specify hidden layers in two ways:
 
@@ -82,5 +73,5 @@ model = lazy.FFNN(4, 2, hidden_dims=[32, 16])
 model = lazy.FFNN(4, 2, hidden_layers=3, hidden_size=64)
 ```
 
-More
+## More
 - See the `lazytorchtools.py` source for other helpers (weight init, conv builders, inference surface Hessians, etc.).
