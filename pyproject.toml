@@ -14,5 +14,5 @@ dependencies = [
     "numpy",
 ]
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.setuptools]
+py-modules = ["lazytorchtools"]
